@@ -10,12 +10,15 @@ import CUDNN.cudnnGetConvolutionNdForwardOutputDim
 import CUDNN.cudnnGetPoolingNdForwardOutputDim
 import CUDNN.cudnnPoolingForward
 import CUDNN.cudnnPoolingBackward
+GPU=true
 include(Pkg.dir("Knet/src/util/conv_pool_cpu.jl"))
 
-padding=0
-stride=1
+@show padding=1
+@show stride=3
 x = reshape(Float32[1:16;], 4, 4, 1, 1); tx = CudaArray(x); @show x
 w = reshape(Float32[1:4;], 2, 2, 1, 1); tw = CudaArray(w); @show w
+@show cudnnGetConvolutionNdForwardOutputDim(tx,tw; padding=padding,stride=stride)
+@show cudnnGetConvolutionNdForwardOutputDim(x,w; padding=padding,stride=stride)
 y = zeros(Float32,3,3,1,1); ty = CudaArray(y); @show y
 cudnnConvolutionForward(tx,tw,ty; padding=padding, stride=stride); y = to_host(ty); @show y
 y2 = zeros(Float32,3,3,1,1); @show y2
