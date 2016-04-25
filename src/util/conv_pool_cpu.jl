@@ -117,10 +117,7 @@ function cudnnConvolutionBackwardData{T}(w::Array{T,4}, dy::Array{T,4}, dx::Arra
     Ww,Hw,C,Kw = size(w)
     @assert Ky==Kw
     @inbounds for n in 1:N, c in 1:C, k in 1:Kw
-        # t = _conv2_gemm(dy[:,:,k,n], w[:,:,c,k]; xcorr=true, pad=Ww-1) #TODO
         t = _conv2_dx_gemm(dy[:,:,k,n], w[:,:,c,k], dx[:,:,c,n]; pad=padding, stride=stride, xcorr=true)
-        # t = conv2(dy[:,:,k,n], rot180(w[:,:,c,k]))
-        # t = _conv2(dy[:,:,k,n], w[:,:,c,k]; pad=Ww-1, stride=stride, xcorr=true)
         dx[:,:,c,n] += t
     end
     return dx
@@ -128,40 +125,66 @@ end
 
 
 function cudnnPoolingForward{T}(x::Array{T,4}, y; window=2, padding=0, stride=window, mode=CUDNN_POOLING_MAX)
+    stride = isa(stride, Integer) ? (stride, stride) : stride
+    window = isa(window, Integer) ? (window,window) : window
+    padding = isa(padding, Integer) ? (padding,padding) : padding
+    if any(map(x->x>0,padding))
+        x0=x
+        w,h,c,n = size(x0)
+        x=zeros(eltype(x0),w+2padding[1],h+2padding[2],c,n)
+        x[padding[1]+1:end-padding[1], padding[2]+1:end-padding[2],:,:] = x0
+    end
     fill!(y,0)
-    @assert (padding==0 &&  mode==CUDNN_POOLING_MAX &&  stride==window)
+    @assert (mode==CUDNN_POOLING_MAX)
     # x: (W,H,C,N)
     Wx,Hx,C,Nx = size(x);
     Wy,Hy,K,Ny = size(y);
     @assert (Nx == Ny && C==K)
-    @inbounds for n in 1:Nx, c in 1:C, j in 1:stride:Hx, i in 1:stride:Wx
-        iy, jy = div(i,stride)+1, div(j,stride)+1
-        hx_end = j+window-1 > Hx ? Hx : j+window-1
-        wx_end = i+window-1 > Hx ? Hx : i+window-1
+    # @inbounds for n in 1:Nx, c in 1:C, j in 1:stride[2]:Hx, i in 1:stride[1]:Wx
+    @inbounds for n in 1:Nx, c in 1:C, jy in 1:Hy, iy in 1:Wy
+        # iy, jy = div(i,stride[1])+1, div(j,stride[2])+1
+        i, j = 1+stride[1]*(iy-1), 1+stride[2]*(jy-1)
+        hx_end = j+window[2]-1 > Hx ? Hx : j+window[2]-1
+        wx_end = i+window[1]-1 > Wx ? Wx : i+window[1]-1
         y[iy,jy,c,n] = maximum(x[i:wx_end,j:hx_end,c,n])
     end
     return y
 end
 
-function cudnnPoolingBackward{T}(y::Array{T,4}, dy::Array{T,4}, x::Array{T,4}, dx::Array{T,4}; window=2, padding=0, stride=1, mode=CUDNN_POOLING_MAX)
+function cudnnPoolingBackward{T}(y::Array{T,4}, dy::Array{T,4}, x::Array{T,4}, dx::Array{T,4}; window=2, padding=0, stride=window, mode=CUDNN_POOLING_MAX)
+    stride = isa(stride, Integer) ? (stride, stride) : stride
+    window = isa(window, Integer) ? (window,window) : window
+    padding = isa(padding, Integer) ? (padding,padding) : padding
     fill!(dx,0)
-    @assert (padding==0 && stride==window && mode==CUDNN_POOLING_MAX)
+    @assert mode==CUDNN_POOLING_MAX
     # x: (W,H,C,N)
+    if any(map(x->x>0,padding))
+        x0=x
+        w,h,c,n = size(x0)
+        x=zeros(eltype(x0),w+2padding[1],h+2padding[2],c,n)
+        x[padding[1]+1:end-padding[1], padding[2]+1:end-padding[2],:,:] = x0
+    end
     Wx,Hx,C,Nx = size(x);
     Wy,Hy,K,Ny = size(y);
     @assert (Nx == Ny && C==K)
-    @inbounds for n in 1:Nx, c in 1:C, j in 1:stride:Hx, i in 1:stride:Wx
-        iy, jy = div(i,stride)+1, div(j,stride)+1
-        hx_end = j+window-1 > Hx ? Hx : j+window-1
-        wx_end = i+window-1 > Hx ? Hx : i+window-1
+    # @inbounds for n in 1:Nx, c in 1:C, j in 1:stride[2]:Hx, i in 1:stride[1]:Wx
+    @inbounds for n in 1:Nx, c in 1:C, jy in 1:Hy, iy in 1:Wy
+        #= iy, jy = div(i,stride[1])+1, div(j,stride[2])+1
+        hx_end = j+window[2]-1 > Hx ? Hx : j+window[2]-1
+        wx_end = i+window[1]-1 > Hx ? Hx : i+window[1]-1 =#
+        i, j = 1+stride[1]*(iy-1), 1+stride[2]*(jy-1)
+        hx_end = j+window[2]-1 > Hx ? Hx : j+window[2]-1
+        wx_end = i+window[1]-1 > Wx ? Wx : i+window[1]-1
         a = x[i:wx_end,j:hx_end,c,n]
         di,dj = ind2sub(a,indmax(a))
-        dx[i+di-1,j+dj-1,c,n] += dy[iy,jy,c,n]
+        dx[i+di-1-padding[1],j+dj-1-padding[2],c,n] += dy[iy,jy,c,n]
     end
     return dx
 end
 
 function cudnnGetConvolutionNdForwardOutputDim{T}(x::Array{T,4}, w::Array{T,4}; padding=padding,stride=stride)
+    padding = isa(padding, Integer) ? [padding,padding] : collect(padding)
+    stride = isa(stride, Integer) ? [stride,stride] : collect(stride)
     Wx,Hx,Cx,N = size(x)
     Ww,Hw,Cw,K = size(w)
     @assert Cx==Cw
@@ -170,12 +193,14 @@ function cudnnGetConvolutionNdForwardOutputDim{T}(x::Array{T,4}, w::Array{T,4}; 
 end
 
 function cudnnGetPoolingNdForwardOutputDim{T}(x::Array{T,4}; window=2, padding=0, stride=1, mode=CUDNN_POOLING_MAX)
-    # @assert padding==0 && stride==1 && mode==CUDNN_POOLING_MAX
+    window = isa(window, Integer) ? (window,window) : window
+    padding = isa(padding, Integer) ? (padding,padding) : padding
+    stride = isa(stride, Integer) ? (stride,stride) : stride
+    @assert reduce(&, [w>p for (p,w) in zip(padding,window)])
     dims = [size(x)...]
-    # (mode, pdims, window, padding, stride) = cudnnGetPoolingNdDescriptor(pd)
     for i=1:length(dims)-2
-        # dims[i] = 1 + floor((dims[i] + 2*padding - window) / stride)
-        dims[i] = 1 + ceil((dims[i] + 2*padding - window) / stride)
+        # dims[i] = 1 + ceil((dims[i] + 2*padding[i] - window[i]) / stride[i])
+        dims[i] = length(1:stride[i]:dims[i]+padding[i])
     end
     tuple(dims...)
 end

@@ -10,6 +10,9 @@ import CUDNN.cudnnGetConvolutionNdForwardOutputDim
 import CUDNN.cudnnGetPoolingNdForwardOutputDim
 import CUDNN.cudnnPoolingForward
 import CUDNN.cudnnPoolingBackward
+
+GPU=1
+
 include(Pkg.dir("Knet/src/util/conv_pool_cpu.jl"))
 
 padding=0
