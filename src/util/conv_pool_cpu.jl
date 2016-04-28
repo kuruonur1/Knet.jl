@@ -23,7 +23,7 @@ function _conv2_dw_gemm{T}(x0::Array{T,2}, dy::Array{T,2}, w::Array{T,2}; pad=0,
     end
     x1l = last(collect(take(countfrom(1,stride),size(dy,1))))
     x2l = last(collect(take(countfrom(1,stride),size(dy,2))))
-    widx = Int[sub2ind(size(x),i,j) for i in 1:size(dw,1), j in 1:size(dw,2)]
+    widx = Int[sub2ind(size(x),i,j) for i in 1:size(w,1), j in 1:size(w,2)]
     oidx = Int[sub2ind(size(x),i,j) for i in 1:stride:x1l, j in 1:stride:x2l] # linear indexes of elements in a filter window
     destidx = Int[i+(j-1) for i in widx, j in oidx]
     return reshape(x[destidx]*(xcorr ? dy[:] : reverse(dy[:])),size(w))
@@ -164,6 +164,7 @@ function cudnnPoolingBackward{T}(y::Array{T,4}, dy::Array{T,4}, x::Array{T,4}, d
         x=zeros(eltype(x0),w+2padding[1],h+2padding[2],c,n)
         x[padding[1]+1:end-padding[1], padding[2]+1:end-padding[2],:,:] = x0
     end
+    dx1 = zeros(x)
     Wx,Hx,C,Nx = size(x);
     Wy,Hy,K,Ny = size(y);
     @assert (Nx == Ny && C==K)
@@ -177,8 +178,10 @@ function cudnnPoolingBackward{T}(y::Array{T,4}, dy::Array{T,4}, x::Array{T,4}, d
         wx_end = i+window[1]-1 > Wx ? Wx : i+window[1]-1
         a = x[i:wx_end,j:hx_end,c,n]
         di,dj = ind2sub(a,indmax(a))
-        dx[i+di-1-padding[1],j+dj-1-padding[2],c,n] += dy[iy,jy,c,n]
+        # dx[i+di-1-padding[1],j+dj-1-padding[2],c,n] += dy[iy,jy,c,n]
+        dx1[i+di-1,j+dj-1,c,n] += dy[iy,jy,c,n]
     end
+    dx = dx1[padding[1]+1:end-padding[1],padding[2]+1:end-padding[2]]
     return dx
 end
 
@@ -188,7 +191,7 @@ function cudnnGetConvolutionNdForwardOutputDim{T}(x::Array{T,4}, w::Array{T,4}; 
     Wx,Hx,Cx,N = size(x)
     Ww,Hw,Cw,K = size(w)
     @assert Cx==Cw
-    Wy,Hy = floor(Int, 1 + (Int[Wx,Hx] + 2*padding - Int[Ww,Hw]) / stride)
+    Wy,Hy = floor(Int, 1 + (Int[Wx,Hx] + 2*padding - Int[Ww,Hw]) ./ stride)
     return (Wy,Hy,K,N)
 end
 
